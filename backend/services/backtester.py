@@ -41,7 +41,7 @@ class BacktestEngine:
             Backtest result object
         """
         # Get agent configuration
-        agent_config = Agent.query.get(agent_id)
+        agent_config = db.session.get(Agent, agent_id)
         if not agent_config:
             raise ValueError(f"Agent {agent_id} not found")
         

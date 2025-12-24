@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
 :root {
   --foreground-rgb: 255, 255, 255;
@@ -10,12 +8,9 @@
 
 body {
   color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
+  background: linear-gradient(to bottom,
       transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+      rgb(var(--background-end-rgb))) rgb(var(--background-start-rgb));
 }
 
 /* Custom scrollbar */
@@ -59,9 +54,12 @@ body {
 
 /* Loading animation */
 @keyframes pulse-glow {
-  0%, 100% {
+
+  0%,
+  100% {
     box-shadow: 0 0 20px 0 rgba(16, 185, 129, 0.3);
   }
+
   50% {
     box-shadow: 0 0 40px 0 rgba(16, 185, 129, 0.5);
   }
@@ -76,18 +74,17 @@ body {
   0% {
     background-position: -200% 0;
   }
+
   100% {
     background-position: 200% 0;
   }
 }
 
 .skeleton {
-  background: linear-gradient(
-    90deg,
-    #1e293b 0%,
-    #334155 50%,
-    #1e293b 100%
-  );
+  background: linear-gradient(90deg,
+      #1e293b 0%,
+      #334155 50%,
+      #1e293b 100%);
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
 }

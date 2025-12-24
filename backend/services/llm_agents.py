@@ -30,55 +30,83 @@ class BaseTradingAgent(ABC):
         self.max_position_size = max_position_size
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
-        self.system_prompt = system_prompt or self._default_system_prompt()
+        # The system_prompt is now generated dynamically, so we store the initial override if provided
+        self._initial_system_prompt_override = system_prompt
     
-    def _default_system_prompt(self) -> str:
-        return f"""You are an expert stock trading analyst evaluating insider trading signals.
+    def get_system_prompt(self, backtest_date: datetime = None) -> str:
+        """Get the system prompt for the agent.
         
-Your risk tolerance is: {self.risk_tolerance}
-Maximum position size: {self.max_position_size * 100}% of portfolio
-Stop loss target: {self.stop_loss_pct * 100}%
-Take profit target: {self.take_profit_pct * 100}%
+        Args:
+            backtest_date: If provided, adds temporal constraints for historical analysis
+        """
+        if self._initial_system_prompt_override:
+            return self._initial_system_prompt_override
 
-When analyzing an insider trade, consider:
-1. The insider's position and track record
-2. The size and significance of the trade
-3. Technical indicators and price action
-4. Sector trends and market conditions
-5. Company fundamentals
+        temporal_context = ""
+        if backtest_date:
+            temporal_context = f"""
 
-Respond with a JSON object containing:
+IMPORTANT TEMPORAL CONSTRAINT:
+You are analyzing historical data from {backtest_date.strftime('%Y-%m-%d')}.
+Do NOT use any information or events that occurred after this date.
+Do NOT access real-time internet data or current market conditions.
+Base your analysis ONLY on the historical data provided in the context.
+"""
+        
+        base_prompt = f"""You are an expert stock trading analyst evaluating insider trading signals.
+        {temporal_context}
+Your task is to analyze insider trading activity and decide whether to BUY, SELL, or HOLD.
+Consider:
+- Insider's position and credibility
+- Trade size and value
+- Recent stock performance and technical indicators (from the provided historical data)
+- Market conditions and sector trends (as of the analysis date)
+- Company fundamentals (from the provided historical data)
+
+Provide your response in the following JSON format:
 {{
     "decision": "BUY" | "SELL" | "HOLD",
     "confidence": 0.0 to 1.0,
-    "position_size": 0.0 to {self.max_position_size},
-    "reasoning": "explanation of your decision",
-    "key_factors": ["list", "of", "key", "factors"],
-    "risk_assessment": "low" | "medium" | "high",
-    "price_target": float or null,
-    "stop_loss": float or null
+    "reasoning": "Brief explanation of your decision"
 }}
-"""
-    
-    def build_analysis_prompt(
-        self,
-        insider_trade: Dict[str, Any],
-        stock_context: Dict[str, Any]
-    ) -> str:
-        """Build the analysis prompt for the LLM."""
-        return f"""
-Analyze this insider trading signal and provide a trading recommendation:
 
+Be analytical and consider both bullish and bearish factors based on the historical context.
+"""
+        return base_prompt
+    
+    def build_analysis_prompt(self, context: dict) -> str:
+        """Build the analysis prompt from context."""
+        trade = context.get('insider_trade', {})
+        stock_context = context.get('stock_context', {})
+        
+        # Extracting specific parts for clarity in the prompt
+        fundamentals = stock_context.get('fundamentals', {})
+        technicals = stock_context.get('technicals', {})
+        signals = stock_context.get('signals', {})
+        
+        trade_date_str = trade.get('trade_date')
+        trade_date = datetime.strptime(trade_date_str, '%Y-%m-%d') if trade_date_str else None
+        
+        date_context = ""
+        if trade_date:
+            date_context = f"""
+ANALYSIS DATE: {trade_date.strftime('%Y-%m-%d')}
+REMINDER: Only use information available as of this date. Do not reference future events.
+"""
+        
+        prompt = f"""
+Analyze the following insider trading signal:
+{date_context}
 ## Insider Trade Details
-- Ticker: {insider_trade.get('ticker')}
-- Company: {insider_trade.get('company_name')}
-- Trade Type: {insider_trade.get('trade_type')} ({'Purchase' if 'P' in str(insider_trade.get('trade_type', '')) else 'Sale'})
-- Insider: {insider_trade.get('insider_name')}
-- Title: {insider_trade.get('insider_title')}
-- Trade Date: {insider_trade.get('trade_date')}
-- Price: ${insider_trade.get('price')}
-- Value: ${insider_trade.get('value'):,.0f}
-- Ownership Change: {insider_trade.get('delta_owned')}%
+- Ticker: {trade.get('ticker')}
+- Company: {trade.get('company_name')}
+- Trade Type: {trade.get('trade_type')} ({'Purchase' if 'P' in str(trade.get('trade_type', '')) else 'Sale'})
+- Insider: {trade.get('insider_name')}
+- Title: {trade.get('insider_title')}
+- Trade Date: {trade.get('trade_date')}
+- Price: ${trade.get('price')}
+- Value: ${trade.get('value'):,.0f}
+- Ownership Change: {trade.get('delta_owned')}%
 
 ## Stock Context
 - Sector: {stock_context.get('sector')}
@@ -86,8 +114,6 @@ Analyze this insider trading signal and provide a trading recommendation:
 - Market Cap: ${stock_context.get('market_cap'):,.0f if stock_context.get('market_cap') else 'N/A'}
 
 ## Fundamentals
-- P/E Ratio: {stock_context.get('fundamentals', {}).get('pe_ratio')}
-- Forward P/E: {stock_context.get('fundamentals', {}).get('forward_pe')}
 - Dividend Yield: {stock_context.get('fundamentals', {}).get('dividend_yield')}
 - Beta: {stock_context.get('fundamentals', {}).get('beta')}
 

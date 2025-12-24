@@ -169,14 +169,14 @@ export default function DataPage() {
                                 <div className="space-y-2">
                                     <Label>Type</Label>
                                     <Select
-                                        value={filters.trade_type}
-                                        onValueChange={(value) => setFilters({ ...filters, trade_type: value })}
+                                        value={filters.trade_type || 'all'}
+                                        onValueChange={(value) => setFilters({ ...filters, trade_type: value === 'all' ? '' : value })}
                                     >
                                         <SelectTrigger className="w-32">
                                             <SelectValue placeholder="All" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="">All</SelectItem>
+                                            <SelectItem value="all">All</SelectItem>
                                             <SelectItem value="P">Purchases</SelectItem>
                                             <SelectItem value="S">Sales</SelectItem>
                                         </SelectContent>
@@ -235,8 +235,8 @@ export default function DataPage() {
                                                     </td>
                                                     <td className="py-3 px-4 text-center">
                                                         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${trade.trade_type?.includes('P')
-                                                                ? 'bg-emerald-500/20 text-emerald-400'
-                                                                : 'bg-red-500/20 text-red-400'
+                                                            ? 'bg-emerald-500/20 text-emerald-400'
+                                                            : 'bg-red-500/20 text-red-400'
                                                             }`}>
                                                             {trade.trade_type?.includes('P') ? (
                                                                 <TrendingUp className="w-3 h-3" />

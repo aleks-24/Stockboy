@@ -18,6 +18,7 @@ const navigation = [
     { name: 'Backtest', href: '/backtest', icon: LineChart },
     { name: 'Results', href: '/results', icon: TrendingUp },
     { name: 'Data', href: '/data', icon: Database },
+    { name: 'Settings', href: '/settings', icon: Settings },
 ];
 
 export function Sidebar() {

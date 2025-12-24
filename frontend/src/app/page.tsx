@@ -47,12 +47,7 @@ export default function Dashboard() {
     fetchData();
   }, []);
 
-  // Sample data for demo when API not connected
-  const samplePortfolioData = Array.from({ length: 30 }, (_, i) => ({
-    date: new Date(Date.now() - (30 - i) * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-    value: 100000 + Math.random() * 20000 + i * 500,
-    benchmark: 100000 + Math.random() * 10000 + i * 300,
-  }));
+
 
   if (loading) {
     return (
@@ -151,10 +146,26 @@ export default function Dashboard() {
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Portfolio Chart */}
         <div className="lg:col-span-2">
-          <PortfolioChart
-            data={stats?.best_backtest?.portfolio_history || samplePortfolioData}
-            title="Latest Backtest Performance"
-          />
+          {stats?.best_backtest?.portfolio_history && stats.best_backtest.portfolio_history.length > 0 ? (
+            <PortfolioChart
+              data={stats.best_backtest.portfolio_history}
+              title="Latest Backtest Performance"
+            />
+          ) : (
+            <Card className="col-span-full">
+              <CardContent className="flex flex-col items-center justify-center py-24">
+                <BarChart3 className="w-16 h-16 text-slate-600 mb-4" />
+                <h3 className="text-lg font-medium text-white mb-2">No Backtest Data</h3>
+                <p className="text-slate-400 text-sm mb-4">Run your first backtest to see performance charts</p>
+                <Link href="/backtest">
+                  <Button>
+                    <Zap className="w-4 h-4 mr-2" />
+                    Run Backtest
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Recent Activity */}
@@ -172,8 +183,8 @@ export default function Dashboard() {
                 <div key={trade.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 hover:bg-slate-800 transition-colors">
                   <div className="flex items-center gap-3">
                     <div className={`p-2 rounded-lg ${trade.trade_type?.includes('P')
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : 'bg-red-500/20 text-red-400'
+                      ? 'bg-emerald-500/20 text-emerald-400'
+                      : 'bg-red-500/20 text-red-400'
                       }`}>
                       {trade.trade_type?.includes('P') ? (
                         <TrendingUp className="w-4 h-4" />
@@ -278,10 +289,10 @@ export default function Dashboard() {
                       </td>
                       <td className="py-3 px-4 text-center">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${backtest.status === 'completed'
-                            ? 'bg-emerald-500/20 text-emerald-400'
-                            : backtest.status === 'running'
-                              ? 'bg-yellow-500/20 text-yellow-400'
-                              : 'bg-red-500/20 text-red-400'
+                          ? 'bg-emerald-500/20 text-emerald-400'
+                          : backtest.status === 'running'
+                            ? 'bg-yellow-500/20 text-yellow-400'
+                            : 'bg-red-500/20 text-red-400'
                           }`}>
                           {backtest.status}
                         </span>

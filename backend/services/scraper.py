@@ -40,7 +40,7 @@ class OpenInsiderScraper:
         end_date: Optional[datetime] = None,
         min_value: int = 25000,
         trade_type: Optional[str] = None,  # 'P' for purchases, 'S' for sales
-        max_pages: int = 100
+        max_pages: int = 200  # 200 pages * 1000 = 200,000 trades max
     ) -> List[Dict[str, Any]]:
         """
         Scrape insider trades within date range.
@@ -56,7 +56,7 @@ class OpenInsiderScraper:
             List of trade dictionaries
         """
         if start_date is None:
-            start_date = datetime.now() - timedelta(days=5*365)
+            start_date = datetime.now() - timedelta(days=5*365)  # 5 years
         if end_date is None:
             end_date = datetime.now()
         
@@ -66,29 +66,44 @@ class OpenInsiderScraper:
         while page <= max_pages:
             logger.info(f"Scraping page {page}...")
             
+            # Use exact OpenInsider URL parameters
             params = {
-                'fd': '730',  # Filing date window (days)
-                'fdr': f"{start_date.strftime('%m/%d/%Y')}+-+{end_date.strftime('%m/%d/%Y')}",
-                'td': '0',  # Trade date window
+                's': '',
+                'o': '',
+                'pl': '',
+                'ph': '',
+                'll': '',
+                'lh': '',
+                'fd': '1500',  # Filing date window (days)
+                'fdr': '',
+                'td': '1500',  # Trade date window (4 years = 1461 days)
                 'tdr': '',
                 'fdlyl': '',
                 'fdlyh': '',
-                'dtefrom': '',
-                'dteto': '',
-                'xp': '1',  # Exclude derivatives
-                'vl': str(min_value),  # Minimum value
+                'daysago': '',
+                'xp': '1',  # Exclude certain trade types
+                'vl': str(min_value) if min_value else '',  # Minimum value
                 'vh': '',
                 'ocl': '',
                 'och': '',
-                'session': '',
-                'iession': '',
-                'cnt': '100',  # Results per page
+                'sic1': '-1',
+                'sicl': '100',
+                'sich': '9999',
+                'grp': '0',
+                'nfl': '',
+                'nfh': '',
+                'nil': '',
+                'nih': '',
+                'nol': '',
+                'noh': '',
+                'v2l': '',
+                'v2h': '',
+                'oc2l': '',
+                'oc2h': '',
+                'sortcol': '0',
+                'cnt': '1000',  # 1000 results per page
                 'page': str(page)
             }
-            
-            if trade_type:
-                params['xs'] = '1' if trade_type == 'P' else '0'  # Exclude sales for purchases
-                params['xb'] = '0' if trade_type == 'P' else '1'  # Exclude buys for sales
             
             try:
                 response = self.session.get(self.BASE_URL, params=params, timeout=30)
@@ -173,20 +188,48 @@ class OpenInsiderScraper:
             trade_type = cells[7].get_text(strip=True)
             
             # Price
-            price_str = cells[8].get_text(strip=True).replace('$', '').replace(',', '')
-            price = float(price_str) if price_str else None
+            try:
+                price_str = cells[8].get_text(strip=True).replace('$', '').replace(',', '').replace('%', '').strip()
+                price = float(price_str) if price_str and price_str not in ['-', 'N/A'] else None
+            except (ValueError, IndexError):
+                price = None
             
             # Quantity
-            qty_str = cells[9].get_text(strip=True).replace(',', '').replace('+', '').replace('-', '')
-            quantity = int(qty_str) if qty_str else None
+            try:
+                qty_str = cells[9].get_text(strip= True).replace(',', '').replace('+', '').replace('-', '').replace('%', '').strip()
+                quantity = int(float(qty_str)) if qty_str and qty_str not in ['', 'N/A'] else None
+            except (ValueError, IndexError):
+                quantity = None
             
-            # Value
-            value_str = cells[11].get_text(strip=True).replace('$', '').replace(',', '').replace('+', '').replace('-', '')
-            value = float(value_str) if value_str else None
+            # Value (column 12)
+            try:
+                value_str = cells[12].get_text(strip=True).replace('$', '').replace(',', '').replace('+', '').replace('-', '').replace('%', '').strip()
+                value = float(value_str) if value_str and value_str not in ['', 'N/A'] else None
+            except (ValueError, IndexError):
+                value = None
             
-            # Delta owned
-            delta_str = cells[12].get_text(strip=True).replace('%', '').replace('+', '') if len(cells) > 12 else None
-            delta_owned = float(delta_str) if delta_str and delta_str != 'New' else None
+            # Delta owned (column 11) - handle various formats
+            if len(cells) > 11:
+                delta_str = cells[11].get_text(strip=True)
+                # Clean up the string - remove %, +, and handle edge cases
+                delta_str = delta_str.replace('%', '').replace('+', '').replace(',', '').strip()
+                
+                # Handle special cases
+                if not delta_str or delta_str.lower() in ['new', 'n/a', '-']:
+                    delta_owned = None
+                elif delta_str.startswith('>') or delta_str.startswith('<'):
+                    # Handle >999% or similar - extract number
+                    try:
+                        delta_owned = float(delta_str[1:])  # Remove the > or < symbol
+                    except ValueError:
+                        delta_owned = None
+                else:
+                    try:
+                        delta_owned = float(delta_str)
+                    except ValueError:
+                        delta_owned = None
+            else:
+                delta_owned = None
             
             return {
                 'filing_date': filing_date,

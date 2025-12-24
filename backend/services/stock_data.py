@@ -23,31 +23,29 @@ class StockDataService:
     def get_stock_data(
         self,
         ticker: str,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        include_indicators: bool = True
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None
     ) -> Dict[str, Any]:
         """
-        Get stock price data with optional technical indicators.
+        Get stock price data with technical indicators.
         
         Args:
             ticker: Stock ticker symbol
-            start_date: Start date for data (default: 1 year ago)
-            end_date: End date for data (default: today)
-            include_indicators: Whether to calculate technical indicators
+            start: Start date (default: 1 year ago)
+            end: End date (default: today)
             
         Returns:
-            Dictionary with stock data and indicators
+            Dictionary with prices and indicators
         """
-        if start_date is None:
-            start_date = datetime.now() - timedelta(days=365)
-        if end_date is None:
-            end_date = datetime.now()
+        if start is None:
+            start = datetime.now() - timedelta(days=365)
+        if end is None:
+            end = datetime.now()
         
         try:
             # Fetch data from yfinance
             stock = yf.Ticker(ticker)
-            df = stock.history(start=start_date, end=end_date)
+            df = stock.history(start=start, end=end)
             
             if df.empty:
                 return {'error': f'No data found for {ticker}'}
@@ -67,13 +65,13 @@ class StockDataService:
                 'beta': info.get('beta'),
                 'fifty_two_week_high': info.get('fiftyTwoWeekHigh'),
                 'fifty_two_week_low': info.get('fiftyTwoWeekLow'),
-                'price_history': self._df_to_price_history(df),
+                'prices': self._df_to_price_history(df),
             }
             
-            if include_indicators:
-                indicators = self.calculate_indicators(df)
-                result['indicators'] = indicators
-                result['latest_indicators'] = self._get_latest_indicators(indicators)
+            # Calculate indicators
+            indicators = self.calculate_indicators(df)
+            result['indicators'] = indicators
+            result['latest_indicators'] = self._get_latest_indicators(indicators)
             
             return result
             
