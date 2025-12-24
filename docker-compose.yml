@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: stockboy-backend
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+      - stockboy-data:/app/data
+    environment:
+      - FLASK_ENV=development
+      - DATABASE_URL=sqlite:///stockboy.db
+      # Add API keys here or use a .env file
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    restart: unless-stopped
+    networks:
+      - stockboy-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: stockboy-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # This needs to point to where the browser can reach the backend
+      - NEXT_PUBLIC_API_URL=http://localhost:5000/api
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - stockboy-network
+
+volumes:
+  stockboy-data:
+
+networks:
+  stockboy-network:
+    driver: bridge
