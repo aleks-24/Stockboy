@@ -16,6 +16,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PortfolioChart } from '@/components/charts/portfolio-chart';
+import { LiveLogViewer } from '@/components/backtest/live-log-viewer';
 import { getBacktest, type Backtest, type Trade } from '@/lib/api';
 
 export default function ResultDetailPage() {
@@ -28,16 +29,33 @@ export default function ResultDetailPage() {
             try {
                 const data = await getBacktest(parseInt(params.id as string));
                 setBacktest(data);
+
+                // If it's done, we don't need to poll anymore
+                if (data.status === 'completed') {
+                    setLoading(false);
+                }
             } catch (error) {
                 console.error('Failed to fetch backtest:', error);
             } finally {
-                setLoading(false);
+                // If we have data, we show it (even if pending)
+                if (backtest || loading) {
+                    setLoading(false);
+                }
             }
         }
         if (params.id) {
             fetchBacktest();
         }
-    }, [params.id]);
+        // Poll every few seconds if running to get status updates (for the badge)
+        // The LiveLogViewer handles the logs, but we want the main status badge to update too
+        const interval = setInterval(() => {
+            if (backtest && backtest.status !== 'completed' && backtest.status !== 'failed') {
+                fetchBacktest();
+            }
+        }, 5000);
+
+        return () => clearInterval(interval);
+    }, [params.id, backtest?.status]);
 
     if (loading) {
         return (
@@ -136,36 +154,51 @@ export default function ResultDetailPage() {
                     </div>
                 </div>
                 <span className={`px-3 py-1.5 rounded-full text-sm font-medium ${backtest.status === 'completed'
-                        ? 'bg-emerald-500/20 text-emerald-400'
-                        : backtest.status === 'running'
-                            ? 'bg-yellow-500/20 text-yellow-400'
-                            : 'bg-red-500/20 text-red-400'
+                    ? 'bg-emerald-500/20 text-emerald-400'
+                    : backtest.status === 'running'
+                        ? 'bg-yellow-500/20 text-yellow-400'
+                        : 'bg-red-500/20 text-red-400'
                     }`}>
                     {backtest.status}
                 </span>
             </div>
 
+            {/* Live Logging Section */}
+            {backtest.status !== 'completed' && backtest.status !== 'failed' && (
+                <div className="mb-8">
+                    <LiveLogViewer
+                        backtestId={backtest.id}
+                        initialStatus={backtest.status}
+                        onComplete={() => {
+                            // Refresh page or data when complete
+                            // fetchBacktest() will handle it on next poll or via state update logic
+                            window.location.reload();
+                        }}
+                    />
+                </div>
+            )}
+
             {/* Metrics Grid */}
             <div className="grid gap-4 md:grid-cols-4">
                 {metrics.map((metric) => (
                     <Card key={metric.label} className={`bg-gradient-to-br ${metric.color === 'emerald' ? 'from-emerald-500/10 to-teal-500/10 border-emerald-500/30' :
-                            metric.color === 'red' ? 'from-red-500/10 to-rose-500/10 border-red-500/30' :
-                                'from-slate-500/10 to-slate-600/10 border-slate-700'
+                        metric.color === 'red' ? 'from-red-500/10 to-rose-500/10 border-red-500/30' :
+                            'from-slate-500/10 to-slate-600/10 border-slate-700'
                         }`}>
                         <CardContent className="p-4">
                             <div className="flex items-center justify-between">
                                 <div>
                                     <p className="text-slate-400 text-sm">{metric.label}</p>
                                     <p className={`text-2xl font-bold ${metric.color === 'emerald' ? 'text-emerald-400' :
-                                            metric.color === 'red' ? 'text-red-400' :
-                                                'text-white'
+                                        metric.color === 'red' ? 'text-red-400' :
+                                            'text-white'
                                         }`}>
                                         {metric.value}
                                     </p>
                                 </div>
                                 <div className={`p-2 rounded-lg ${metric.color === 'emerald' ? 'bg-emerald-500/20 text-emerald-400' :
-                                        metric.color === 'red' ? 'bg-red-500/20 text-red-400' :
-                                            'bg-slate-700/50 text-slate-400'
+                                    metric.color === 'red' ? 'bg-red-500/20 text-red-400' :
+                                        'bg-slate-700/50 text-slate-400'
                                     }`}>
                                     <metric.icon className="w-5 h-5" />
                                 </div>
@@ -217,8 +250,8 @@ export default function ResultDetailPage() {
                                             <td className="py-3 px-4 font-medium text-white">{trade.ticker}</td>
                                             <td className="py-3 px-4">
                                                 <span className={`px-2 py-0.5 rounded text-xs font-medium ${trade.trade_type === 'buy'
-                                                        ? 'bg-emerald-500/20 text-emerald-400'
-                                                        : 'bg-red-500/20 text-red-400'
+                                                    ? 'bg-emerald-500/20 text-emerald-400'
+                                                    : 'bg-red-500/20 text-red-400'
                                                     }`}>
                                                     {trade.trade_type.toUpperCase()}
                                                 </span>

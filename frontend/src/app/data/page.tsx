@@ -250,7 +250,12 @@ export default function DataPage() {
                                                         ${trade.price?.toFixed(2)}
                                                     </td>
                                                     <td className="py-3 px-4 text-right text-white">
-                                                        ${(trade.value / 1000).toFixed(0)}K
+                                                        ${trade.value >= 1000000 
+                                                            ? `${(trade.value / 1000000).toFixed(1)}M` 
+                                                            : trade.value >= 1000
+                                                                ? `${(trade.value / 1000).toFixed(0)}K`
+                                                                : trade.value?.toFixed(0) || '0'
+                                                        }
                                                     </td>
                                                     <td className="py-3 px-4 text-right text-slate-400">
                                                         {trade.delta_owned ? `${trade.delta_owned.toFixed(1)}%` : '-'}

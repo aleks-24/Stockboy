@@ -328,21 +328,44 @@ class MockAgent(BaseTradingAgent):
         value = insider_trade.get('value', 0) or 0
         
         # Simple rule-based mock
-        if is_purchase and value > 100000:
+        if is_purchase and value > 10000:
             decision = 'BUY'
-            confidence = min(0.5 + (value / 1000000) * 0.3, 0.9)
+            confidence = min(0.5 + (value / 100000) * 0.3, 0.9)
+            factors = [
+                f"Significant insider purchase value (${value:,.0f})",
+                "High confidence in insider conviction",
+                "Technical indicators suggest upward momentum"
+            ]
         elif not is_purchase and value > 500000:
             decision = 'SELL'
             confidence = min(0.4 + (value / 2000000) * 0.3, 0.8)
+            factors = [
+                f"Large insider sale value (${value:,.0f})",
+                "Potential profit taking detected",
+                "Technical resistance levels approaching"
+            ]
         else:
             decision = 'HOLD'
             confidence = 0.3
+            factors = [
+                "Transaction value below threshold for strong signal",
+                "Market conditions are neutral",
+                "Waiting for clearer confirmation"
+            ]
+            
+        reasoning = (
+            f"1. **Trade Analysis**: {insider_trade.get('insider_name')} executed a {trade_type} of ${value:,.0f}.\n"
+            f"2. **Context**: This represents a {decision} signal based on value thresholds.\n"
+            f"3. **Key Factors**:\n" + 
+            "\n".join([f"   - {f}" for f in factors]) + "\n"
+            f"4. **Conclusion**: decided to {decision} with {confidence:.0%} confidence."
+        )
         
         return {
             'decision': decision,
             'confidence': round(confidence, 2),
             'position_size': self.max_position_size * confidence if decision == 'BUY' else 0,
-            'reasoning': f"Mock analysis: {'Purchase' if is_purchase else 'Sale'} of ${value:,.0f} by {insider_trade.get('insider_name')}",
+            'reasoning': reasoning,
             'key_factors': ['insider_type', 'trade_value', 'trade_type'],
             'risk_assessment': 'medium',
             'price_target': None,

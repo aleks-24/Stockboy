@@ -13,7 +13,7 @@ import {
     SelectTrigger,
     SelectValue
 } from '@/components/ui/select';
-import { getAgents, createAgent, deleteAgent, type Agent } from '@/lib/api';
+import { getAgents, createAgent, deleteAgent, updateAgent, type Agent } from '@/lib/api';
 
 const PROVIDERS = [
     { value: 'openai', label: 'OpenAI', models: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'] },
@@ -28,6 +28,7 @@ export default function AgentsPage() {
     const [agents, setAgents] = useState<Agent[]>([]);
     const [loading, setLoading] = useState(true);
     const [showForm, setShowForm] = useState(false);
+    const [editingAgent, setEditingAgent] = useState<Agent | null>(null);
     const [formData, setFormData] = useState({
         name: '',
         provider: 'openai',
@@ -86,6 +87,45 @@ export default function AgentsPage() {
         }
     }
 
+    async function handleEditAgent(agent: Agent) {
+        setEditingAgent(agent);
+        setFormData({
+            name: agent.name,
+            provider: agent.provider,
+            model: agent.model,
+            temperature: agent.temperature,
+            risk_tolerance: agent.risk_tolerance,
+            max_position_size: agent.max_position_size,
+            stop_loss_pct: agent.stop_loss_pct,
+            take_profit_pct: agent.take_profit_pct,
+            system_prompt: agent.system_prompt || '',
+        });
+        setShowForm(true);
+    }
+
+    async function handleUpdateAgent() {
+        if (!editingAgent) return;
+        try {
+            await updateAgent(editingAgent.id, formData);
+            setShowForm(false);
+            setEditingAgent(null);
+            setFormData({
+                name: '',
+                provider: 'openai',
+                model: 'gpt-4',
+                temperature: 0.7,
+                risk_tolerance: 'moderate',
+                max_position_size: 0.1,
+                stop_loss_pct: 0.1,
+                take_profit_pct: 0.2,
+                system_prompt: '',
+            });
+            fetchAgents();
+        } catch (error) {
+            console.error('Failed to update agent:', error);
+        }
+    }
+
     const selectedProvider = PROVIDERS.find(p => p.value === formData.provider);
 
     return (
@@ -112,7 +152,7 @@ export default function AgentsPage() {
                     <CardHeader>
                         <CardTitle className="flex items-center gap-2">
                             <Bot className="w-5 h-5 text-emerald-400" />
-                            Create New Agent
+                            {editingAgent ? 'Edit Agent' : 'Create New Agent'}
                         </CardTitle>
                         <CardDescription>
                             Configure a new LLM trading agent with your preferred settings
@@ -273,13 +313,16 @@ export default function AgentsPage() {
 
                         {/* Actions */}
                         <div className="flex justify-end gap-3 mt-6">
-                            <Button variant="outline" onClick={() => setShowForm(false)}>
+                            <Button variant="outline" onClick={() => { setShowForm(false); setEditingAgent(null); }}>
                                 <X className="w-4 h-4 mr-2" />
                                 Cancel
                             </Button>
-                            <Button onClick={handleCreateAgent} disabled={!formData.name}>
+                            <Button
+                                onClick={editingAgent ? handleUpdateAgent : handleCreateAgent}
+                                disabled={!formData.name}
+                            >
                                 <Save className="w-4 h-4 mr-2" />
-                                Create Agent
+                                {editingAgent ? 'Update Agent' : 'Create Agent'}
                             </Button>
                         </div>
                     </CardContent>
@@ -306,14 +349,24 @@ export default function AgentsPage() {
                                             <CardDescription>{agent.provider} / {agent.model}</CardDescription>
                                         </div>
                                     </div>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="text-slate-500 hover:text-red-400"
-                                        onClick={() => handleDeleteAgent(agent.id)}
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </Button>
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="text-slate-500 hover:text-emerald-400"
+                                            onClick={() => handleEditAgent(agent)}
+                                        >
+                                            <Edit2 className="w-4 h-4" />
+                                        </Button>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="text-slate-500 hover:text-red-400"
+                                            onClick={() => handleDeleteAgent(agent.id)}
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </Button>
+                                    </div>
                                 </div>
                             </CardHeader>
                             <CardContent>

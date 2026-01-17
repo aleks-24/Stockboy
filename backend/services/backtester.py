@@ -3,6 +3,7 @@ Backtesting engine for evaluating LLM trading agents.
 """
 import logging
 from datetime import datetime, timedelta
+import time
 from typing import Dict, Any, List, Optional
 import numpy as np
 
@@ -19,13 +20,16 @@ class BacktestEngine:
     def __init__(self):
         self.stock_service = StockDataService()
     
+
     def run_backtest(
         self,
         agent_id: int,
         start_date: datetime,
         end_date: datetime,
         initial_capital: float = 100000.0,
-        holding_period_days: int = 30
+        holding_period_days: int = 30,
+        progress_callback=None,
+        existing_backtest_id: int = None
     ) -> Backtest:
         """
         Run a backtest for an agent.
@@ -36,11 +40,16 @@ class BacktestEngine:
             end_date: End of backtest period
             initial_capital: Starting capital
             holding_period_days: Default holding period for positions
+            progress_callback: Optional callback function(message, type)
+            existing_backtest_id: Optional ID of existing backtest record
             
         Returns:
             Backtest result object
         """
         # Get agent configuration
+        if progress_callback:
+            progress_callback(f"Starting backtest for agent {agent_id}", "info")
+        
         agent_config = db.session.get(Agent, agent_id)
         if not agent_config:
             raise ValueError(f"Agent {agent_id} not found")
@@ -58,23 +67,37 @@ class BacktestEngine:
             system_prompt=agent_config.system_prompt
         )
         
-        # Create backtest record
-        backtest = Backtest(
-            agent_id=agent_id,
-            start_date=start_date,
-            end_date=end_date,
-            initial_capital=initial_capital,
-            status='running'
-        )
-        db.session.add(backtest)
+        if existing_backtest_id:
+            backtest = db.session.get(Backtest, existing_backtest_id)
+            if not backtest:
+                raise ValueError(f"Backtest {existing_backtest_id} not found")
+            # Update status if needed
+            backtest.status = 'running'
+        else:
+            # Create backtest record
+            backtest = Backtest(
+                agent_id=agent_id,
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=initial_capital,
+                status='running'
+            )
+            db.session.add(backtest)
+            
         db.session.commit()
         
         try:
             # Get insider trades in the period
+            if progress_callback:
+                progress_callback(f"Fetching insider trades from {start_date.date()} to {end_date.date()}", "info")
+            
             insider_trades = InsiderTrade.query.filter(
                 InsiderTrade.trade_date >= start_date,
                 InsiderTrade.trade_date <= end_date
             ).order_by(InsiderTrade.trade_date).all()
+            
+            if progress_callback:
+                progress_callback(f"Found {len(insider_trades)} insider trades to analyze", "info")
             
             if not insider_trades:
                 backtest.status = 'completed'
@@ -89,7 +112,65 @@ class BacktestEngine:
             trades = []
             portfolio_history = []
             
-            for insider_trade in insider_trades:
+            if progress_callback:
+                progress_callback(f"Starting simulation with ${initial_capital:,.2f} initial capital", "info")
+            
+            # Aggregate trades by ticker, date, and type to avoid double work
+            aggregated_map = {}
+            for trade in insider_trades:
+                # Key: Ticker + Date (YYYY-MM-DD) + Type
+                key = (trade.ticker, trade.trade_date.date(), trade.trade_type)
+                
+                if key not in aggregated_map:
+                    # Create base dict from first trade
+                    base_dict = trade.to_dict()
+                    base_dict['insider_names'] = [trade.insider_name]
+                    base_dict['original_count'] = 1
+                    aggregated_map[key] = base_dict
+                else:
+                    # Merge into existing
+                    agg = aggregated_map[key]
+                    agg['value'] = (agg.get('value') or 0) + (trade.value or 0)
+                    agg['quantity'] = (agg.get('quantity') or 0) + (trade.quantity or 0)
+                    if trade.insider_name not in agg['insider_names']:
+                        agg['insider_names'].append(trade.insider_name)
+                    agg['original_count'] += 1
+            
+            # Convert aggregated map back to list of objects (or dicts acting as objects)
+            # We need to simulate the object access pattern or just use dicts. 
+            # The current loop uses `insider_trade.ticker`. If we change `insider_trades` to be a list of dicts,
+            # we must adjust the accessors in the loop below (e.g. `insider_trade['ticker']`).
+            # BETTER STRATEGY: Create a simple class wrapper or just modify the loop to handle dicts if needed.
+            # But simpler: Use `SimpleNamespace` or just rewrite the loop to use dict access?
+            # The loop uses: .ticker, .trade_date, .to_dict().
+            # Let's wrap the dicts in a helper class to maintain dot notation compatibility.
+            
+            class TradeWrapper:
+                def __init__(self, data):
+                    self.data = data
+                    for k, v in data.items():
+                        setattr(self, k, v)
+                    # Special handling for aggregated fields
+                    if len(data.get('insider_names', [])) > 1:
+                        self.insider_name = f"{len(data['insider_names'])} Insiders ({', '.join(data['insider_names'][:2])}...)"
+                    self.value = data.get('value')
+                    self.quantity = data.get('quantity')
+                    # Ensure price exists (fallback to original entry's price)
+                    self.price = data.get('price')
+
+                def to_dict(self):
+                    return self.data
+
+            processed_trades = [TradeWrapper(d) for d in aggregated_map.values()]
+            # Sort by date
+            processed_trades.sort(key=lambda x: x.trade_date)
+            
+            if progress_callback:
+                 progress_callback(f"Aggregated {len(insider_trades)} raw trades into {len(processed_trades)} analyzed events.", "info")
+
+            for idx, insider_trade in enumerate(processed_trades, 1):
+                if progress_callback and idx % 10 == 0:
+                    progress_callback(f"Analyzing trade {idx}/{len(insider_trades)}: {insider_trade.ticker}", "progress")
                 # Get stock context for analysis
                 stock_context = self.stock_service.get_analysis_context(
                     insider_trade.ticker,
@@ -97,14 +178,37 @@ class BacktestEngine:
                 )
                 
                 if 'error' in stock_context:
-                    logger.warning(f"Skipping {insider_trade.ticker}: {stock_context['error']}")
-                    continue
+                    logger.warning(f"Stock context error for {insider_trade.ticker}: {stock_context['error']}. Proceeding with insider data only.")
+                    # continue  <-- Don't skip, just proceed
                 
                 # Get LLM decision
                 decision = agent.analyze_trade(insider_trade.to_dict(), stock_context)
                 
+                # Log detailed analysis
+                reasoning = decision.get('reasoning', 'No reasoning provided')
+                decision_type = decision.get('decision', 'HOLD')
+                confidence = decision.get('confidence', 0)
+                
+                # Throttle for live feeling
+                time.sleep(0.1)
+                
+                # Debug logging
+                logger.info(f"Trade Analysis - Ticker: {insider_trade.ticker}, Type: {insider_trade.trade_type}, Value: {insider_trade.value}, Decision: {decision_type}")
+
+                if progress_callback:
+                    # Log the reasoning as a distinct step
+                    progress_callback(f"🤖 Agent Analysis for {insider_trade.ticker}:", "analysis")
+                    progress_callback(f"{reasoning}", "analysis_details")
+                    
+                    if decision_type == 'BUY':
+                        progress_callback(f"  → BUY signal for {insider_trade.ticker} (confidence: {confidence:.2f})", "trade")
+                    elif decision_type == 'SELL':
+                            progress_callback(f"  → SELL signal for {insider_trade.ticker} (confidence: {confidence:.2f})", "trade")
+                    else:
+                        progress_callback(f"  → HOLD decision for {insider_trade.ticker}", "info")
+                
                 # Execute trade if decision is to buy
-                if decision.get('decision') == 'BUY' and decision.get('confidence', 0) > 0.5:
+                if decision_type == 'BUY' and confidence > 0.5:
                     trade = self._execute_buy(
                         portfolio, insider_trade, decision, holding_period_days
                     )
@@ -130,11 +234,17 @@ class BacktestEngine:
                     trades.append(close_result)
             
             # Calculate final metrics
+            if progress_callback:
+                progress_callback(f"Backtest complete. Calculating final metrics...", "info")
+            
             final_value = portfolio.get_total_value(end_date, self.stock_service)
             metrics = self._calculate_metrics(
                 initial_capital, final_value, trades,
                 start_date, end_date, portfolio_history
             )
+            
+            if progress_callback:
+                progress_callback(f"Final value: ${final_value:,.2f} | Return: {metrics['total_return']:.2f}% | Trades: {len(trades)}", "success")
             
             # Get benchmark return
             benchmark_return = self._calculate_benchmark_return(start_date, end_date)
@@ -194,8 +304,13 @@ class BacktestEngine:
         
         # Get current price
         current_price = self.stock_service.get_price_at_date(ticker, trade_date)
-        if not current_price:
-            return None
+        if current_price is None:
+            # Fallback to insider transaction price if market data fails
+            if insider_trade.price:
+                current_price = insider_trade.price
+                logger.warning(f"Using insider price ${current_price} as fallback for {insider_trade.ticker}")
+            else:
+                return None
         
         # Calculate position size
         position_size = decision.get('position_size', 0.05)
@@ -242,7 +357,8 @@ class BacktestEngine:
         exit_price = self.stock_service.get_price_at_date(ticker, exit_date)
         
         if not exit_price:
-            return None
+            logger.warning(f"Using entry price {position['entry_price']} as fallback exit for {ticker}")
+            exit_price = position['entry_price']
         
         quantity = position['quantity']
         entry_price = position['entry_price']
@@ -347,6 +463,87 @@ class BacktestEngine:
         except Exception as e:
             logger.error(f"Error calculating benchmark: {e}")
         return None
+    
+    def run_simple_backtest(
+        self,
+        insider_trade: InsiderTrade,
+        holding_period_days: int = 30,
+        position_size: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        Run a simple backtest for a single insider trade without LLM agents.
+        
+        Args:
+            insider_trade: The insider trade to backtest
+            holding_period_days: Number of days to hold the position
+            position_size: Multiplier for position size (1.0 = 100% of available capital)
+            
+        Returns:
+            Dictionary with backtest results including entry/exit prices and returns
+        """
+        try:
+            ticker = insider_trade.ticker
+            entry_date = insider_trade.trade_date
+            exit_date = entry_date + timedelta(days=holding_period_days)
+            
+            # Get entry price (price at insider trade date)
+            entry_price = self.stock_service.get_price_at_date(ticker, entry_date)
+            if not entry_price:
+                return {
+                    'success': False,
+                    'error': f'Could not fetch entry price for {ticker} on {entry_date.strftime("%Y-%m-%d")}'
+                }
+            
+            # Get exit price (price after holding period)
+            exit_price = self.stock_service.get_price_at_date(ticker, exit_date)
+            if not exit_price:
+                return {
+                    'success': False,
+                    'error': f'Could not fetch exit price for {ticker} on {exit_date.strftime("%Y-%m-%d")}'
+                }
+            
+            # Calculate returns
+            price_change = exit_price - entry_price
+            return_pct = (price_change / entry_price) * 100
+            
+            # Calculate P&L assuming $10,000 position
+            initial_investment = 10000 * position_size
+            shares = initial_investment / entry_price
+            pnl = shares * price_change
+            final_value = initial_investment + pnl
+            
+            # Get stock info for context
+            stock_context = self.stock_service.get_analysis_context(ticker, entry_date)
+            
+            return {
+                'success': True,
+                'ticker': ticker,
+                'company_name': insider_trade.company_name,
+                'insider_name': insider_trade.insider_name,
+                'insider_title': insider_trade.insider_title,
+                'trade_type': insider_trade.trade_type,
+                'insider_trade_value': insider_trade.value,
+                'entry_date': entry_date.isoformat(),
+                'exit_date': exit_date.isoformat(),
+                'holding_period_days': holding_period_days,
+                'entry_price': round(entry_price, 2),
+                'exit_price': round(exit_price, 2),
+                'price_change': round(price_change, 2),
+                'return_pct': round(return_pct, 2),
+                'initial_investment': round(initial_investment, 2),
+                'shares': round(shares, 4),
+                'pnl': round(pnl, 2),
+                'final_value': round(final_value, 2),
+                'sector': stock_context.get('sector') if 'error' not in stock_context else None,
+                'industry': stock_context.get('industry') if 'error' not in stock_context else None,
+            }
+            
+        except Exception as e:
+            logger.error(f"Simple backtest failed: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
 
 class Portfolio:

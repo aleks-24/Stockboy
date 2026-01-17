@@ -5,6 +5,8 @@ Flask API Backend
 import os
 import logging
 from datetime import datetime, timedelta
+import queue
+import threading
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -30,7 +32,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Initialize extensions - Configure CORS with proper settings
 CORS(app, resources={
     r"/api/*": {
-        "origins": ["http://localhost:3000", "http://127.0.0.1:3000"],
+        "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001"],
         "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
         "supports_credentials": True
@@ -41,6 +43,10 @@ db.init_app(app)
 # Initialize services
 stock_service = StockDataService()
 backtest_engine = BacktestEngine()
+
+# Global dictionary to store message queues for active backtests
+# Key: backtest_id, Value: queue.Queue
+BACKTEST_QUEUES = {}
 
 
 @app.route('/api/health', methods=['GET'])
@@ -243,9 +249,131 @@ def get_backtest(backtest_id):
     return jsonify(result)
 
 
+def run_backtest_wrapper(backtest_id, kwargs):
+    """Wrapper to run backtest in a thread and push logs to queue."""
+    logger.info(f"Starting background backtest {backtest_id}")
+    
+    # Create a new queue for this backtest
+    if backtest_id not in BACKTEST_QUEUES:
+        BACKTEST_QUEUES[backtest_id] = queue.Queue()
+        
+    log_queue = BACKTEST_QUEUES[backtest_id]
+    
+    def progress_callback(message, msg_type="info"):
+        """Callback to push messages to queue."""
+        try:
+            log_queue.put({
+                "message": message,
+                "type": msg_type,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            logger.error(f"Error pushing to queue: {e}")
+            
+    with app.app_context():
+        try:
+            # Add existing_backtest_id to kwargs
+            kwargs['existing_backtest_id'] = backtest_id
+            kwargs['progress_callback'] = progress_callback
+            
+            backtest_engine.run_backtest(**kwargs)
+            
+            # Send completion message
+            log_queue.put({
+                "message": "Backtest completed successfully",
+                "type": "complete",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Background backtest failed: {e}")
+            log_queue.put({
+                "message": f"Backtest failed: {str(e)}",
+                "type": "error",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        finally:
+            pass
+
+
+@app.route('/api/backtests/stream/<int:backtest_id>', methods=['GET'])
+def stream_backtest_logs(backtest_id):
+    """Stream backtest logs in real-time using Server-Sent Events."""
+    from flask import Response, stream_with_context
+    import json
+    import time
+    
+    def generate():
+        """Generator function for SSE stream."""
+        try:
+            # Send initial message
+            yield f"data: {json.dumps({'message': f'Connected to backtest {backtest_id} stream', 'type': 'info'})}\n\n"
+            
+            # Get the queue
+            log_queue = BACKTEST_QUEUES.get(backtest_id)
+            
+            # If no queue (maybe restarted server or completed long ago), check DB
+            if not log_queue:
+                with app.app_context():
+                    backtest = Backtest.query.get(backtest_id)
+                    if backtest and backtest.status == 'completed':
+                        yield f"data: {json.dumps({'message': 'Backtest already completed', 'type': 'complete', 'return': backtest.total_return})}\n\n"
+                        return
+                    elif backtest and backtest.status == 'failed':
+                        yield f"data: {json.dumps({'message': f'Backtest failed: {backtest.error_message}', 'type': 'error'})}\n\n"
+                        return
+                    else:
+                        yield f"data: {json.dumps({'message': 'Waiting for backtest to start...', 'type': 'info'})}\n\n"
+            
+            # Stream from queue
+            timeout_seconds = 600  # 10 minute timeout
+            start_time = datetime.utcnow()
+            last_activity = start_time
+            
+            while (datetime.utcnow() - start_time).total_seconds() < timeout_seconds:
+                # Check for messages in queue
+                if log_queue and not log_queue.empty():
+                    try:
+                        msg_data = log_queue.get_nowait()
+                        yield f"data: {json.dumps(msg_data)}\n\n"
+                        last_activity = datetime.utcnow()
+                        
+                        if msg_data.get('type') in ['complete', 'error']:
+                            break
+                    except queue.Empty:
+                        pass
+                
+                # If queue is empty, verify backtest implementation hasn't crashed/finished without queue update
+                # (or if we are just waiting for it to be created)
+                if not log_queue and backtest_id in BACKTEST_QUEUES:
+                    log_queue = BACKTEST_QUEUES[backtest_id]
+                
+                # Send heartbeat
+                if (datetime.utcnow() - last_activity).total_seconds() > 5:
+                    yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+                    last_activity = datetime.utcnow()
+                
+                time.sleep(0.1)
+                    
+        except GeneratorExit:
+            logger.info(f"Client disconnected from backtest {backtest_id} stream")
+            # Optional: cleanup queue if no one else is listening?
+            # For simplicity, we leave it since it's just strings
+    
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
+        }
+    )
+
+
 @app.route('/api/backtests', methods=['POST'])
 def run_backtest():
-    """Run a new backtest."""
+    """Run a new backtest in the background."""
     data = request.get_json()
     
     agent_id = data['agent_id']
@@ -255,16 +383,39 @@ def run_backtest():
     holding_period = data.get('holding_period_days', 30)
     
     try:
-        backtest = backtest_engine.run_backtest(
+        # Create backtest record immediately to get an ID
+        backtest = Backtest(
             agent_id=agent_id,
             start_date=start_date,
             end_date=end_date,
             initial_capital=initial_capital,
-            holding_period_days=holding_period
+            status='pending'
         )
-        return jsonify(backtest.to_dict()), 201
+        db.session.add(backtest)
+        db.session.commit()
+        
+        # Prepare arguments for backtest engine
+        kwargs = {
+            'agent_id': agent_id,
+            'start_date': start_date,
+            'end_date': end_date,
+            'initial_capital': initial_capital,
+            'holding_period_days': holding_period
+        }
+        
+        # Start background thread
+        thread = threading.Thread(
+            target=run_backtest_wrapper,
+            args=(backtest.id, kwargs)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        # Return accepted status with backtest details
+        return jsonify(backtest.to_dict()), 202
+        
     except Exception as e:
-        logger.error(f"Backtest error: {e}")
+        logger.error(f"Backtest startup error: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -273,6 +424,50 @@ def get_backtest_trades(backtest_id):
     """Get trades for a backtest."""
     trades = Trade.query.filter_by(backtest_id=backtest_id).all()
     return jsonify({'trades': [t.to_dict() for t in trades]})
+
+
+@app.route('/api/backtest/simple', methods=['POST'])
+def run_simple_backtest():
+    """Run a simple backtest for a single insider trade without requiring agents."""
+    data = request.get_json()
+    
+    # Validate required parameters
+    if 'insider_trade_id' not in data:
+        return jsonify({'error': 'insider_trade_id is required'}), 400
+    
+    insider_trade_id = data['insider_trade_id']
+    holding_period_days = data.get('holding_period_days', 30)
+    position_size = data.get('position_size', 1.0)
+    
+    # Validate holding period
+    if holding_period_days <= 0 or holding_period_days > 365:
+        return jsonify({'error': 'holding_period_days must be between 1 and 365'}), 400
+    
+    # Validate position size
+    if position_size <= 0 or position_size > 1.0:
+        return jsonify({'error': 'position_size must be between 0 and 1.0'}), 400
+    
+    # Get the insider trade
+    insider_trade = InsiderTrade.query.get(insider_trade_id)
+    if not insider_trade:
+        return jsonify({'error': f'Insider trade {insider_trade_id} not found'}), 404
+    
+    try:
+        # Run the simple backtest
+        result = backtest_engine.run_simple_backtest(
+            insider_trade=insider_trade,
+            holding_period_days=holding_period_days,
+            position_size=position_size
+        )
+        
+        if result.get('success'):
+            return jsonify(result), 200
+        else:
+            return jsonify({'error': result.get('error', 'Unknown error')}), 500
+            
+    except Exception as e:
+        logger.error(f"Simple backtest error: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 # ==================== STATS ====================
@@ -315,6 +510,48 @@ def get_stats():
 # Create database tables
 with app.app_context():
     db.create_all()
+    
+    # Seed default "Robust Trader" agent if not exists
+    try:
+        if Agent.query.filter_by(name="Robust Trader").first() is None:
+            logger.info("Seeding 'Robust Trader' agent...")
+            
+            # Determine provider based on available keys
+            provider = "mock"
+            model = "mock-v1"
+            if os.getenv("OPENAI_API_KEY"):
+                provider = "openai"
+                model = "gpt-4o"
+            elif os.getenv("ANTHROPIC_API_KEY"):
+                provider = "anthropic"
+                model = "claude-3-5-sonnet-20240620"
+                
+            robust_agent = Agent(
+                name="Robust Trader",
+                provider=provider,
+                model=model,
+                temperature=0.7,
+                risk_tolerance="high",
+                max_position_size=0.15,
+                stop_loss_pct=0.15,
+                take_profit_pct=0.30,
+                system_prompt="""You are a highly analytical and decisive trading algorithm specializing in insider trading signals.
+Your goal is to maximize alpha by identifying high-conviction insider moves.
+
+METHODOLOGY:
+1. **Analyze the Insider**: Is this a C-level exec (CEO/CFO)? They know the most. Is it a cluster of buys? 
+2. **Analyze the Trade**: Is the value > $100k? Is it a Purchase? (Grants/Options are less signal).
+3. **Analyze the Value**: Is the stock beaten down? (Value play) or Momentum? 
+4. **Decision**: Be decisive. If the signal is strong, BUY. If bad, SELL. If noise, HOLD.
+
+Your output reasoning MUST be a step-by-step breakdown using bullet points.
+"""
+            )
+            db.session.add(robust_agent)
+            db.session.commit()
+            logger.info(f"Seeded 'Robust Trader' using {provider}")
+    except Exception as e:
+        logger.error(f"Failed to seed agents: {e}")
 
 
 if __name__ == '__main__':

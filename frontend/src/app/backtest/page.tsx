@@ -59,7 +59,7 @@ export default function BacktestPage() {
                 holding_period_days: formData.holding_period_days,
             });
 
-            // Navigate to results page
+            // Navigate to results page immediately (backend returns 202 pending)
             router.push(`/results/${result.id}`);
         } catch (error) {
             console.error('Failed to run backtest:', error);
