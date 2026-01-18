@@ -49,6 +49,88 @@ backtest_engine = BacktestEngine()
 BACKTEST_QUEUES = {}
 
 
+
+def update_env_file(key, value):
+    """Update or add a key-value pair in the .env file."""
+    env_path = os.path.join(os.path.dirname(__file__), '.env')
+    
+    # Read existing lines
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            lines = f.readlines()
+            
+    # Process lines
+    new_lines = []
+    found = False
+    for line in lines:
+        if line.startswith(f"{key}="):
+            new_lines.append(f"{key}={value}\n")
+            found = True
+        else:
+            new_lines.append(line)
+            
+    # Add if not found
+    if not found:
+        if new_lines and not new_lines[-1].endswith('\n'):
+            new_lines[-1] += '\n'
+        new_lines.append(f"{key}={value}\n")
+        
+    # Write back
+    with open(env_path, 'w') as f:
+        f.writelines(new_lines)
+        
+    # Update current process env
+    os.environ[key] = value
+
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    """Get current settings (masked)."""
+    keys = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GOOGLE_API_KEY']
+    settings = {}
+    
+    for key in keys:
+        val = os.getenv(key)
+        if val:
+            # Mask the key: show first 3 and last 4 chars
+            if len(val) > 10:
+                settings[key.lower()] = f"{val[:3]}...{val[-4:]}"
+            else:
+                settings[key.lower()] = "Set (hidden)"
+        else:
+            settings[key.lower()] = ""
+            
+    return jsonify(settings)
+
+
+@app.route('/api/settings', methods=['POST'])
+def update_settings():
+    """Update settings."""
+    data = request.get_json()
+    
+    mapping = {
+        'openai': 'OPENAI_API_KEY',
+        'anthropic': 'ANTHROPIC_API_KEY',
+        'google': 'GOOGLE_API_KEY'
+    }
+    
+    updated = []
+    for ui_key, env_key in mapping.items():
+        if ui_key in data and data[ui_key]:
+            # Only update if value is provided (not empty)
+            # If masked value is sent back, ignore it
+            if '...' not in data[ui_key] and 'Set (hidden)' not in data[ui_key]:
+                update_env_file(env_key, data[ui_key])
+                updated.append(ui_key)
+                
+    return jsonify({
+        'status': 'success',
+        'updated': updated,
+        'message': 'Settings saved successfully. Changes apply immediately.'
+    })
+
+
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint."""

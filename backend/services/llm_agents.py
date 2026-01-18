@@ -33,7 +33,8 @@ class BaseTradingAgent(ABC):
         # The system_prompt is now generated dynamically, so we store the initial override if provided
         self._initial_system_prompt_override = system_prompt
     
-    def get_system_prompt(self, backtest_date: datetime = None) -> str:
+    @property
+    def system_prompt(self) -> str:
         """Get the system prompt for the agent.
         
         Args:
@@ -42,6 +43,7 @@ class BaseTradingAgent(ABC):
         if self._initial_system_prompt_override:
             return self._initial_system_prompt_override
 
+        backtest_date = None
         temporal_context = ""
         if backtest_date:
             temporal_context = f"""
@@ -74,18 +76,24 @@ Be analytical and consider both bullish and bearish factors based on the histori
 """
         return base_prompt
     
-    def build_analysis_prompt(self, context: dict) -> str:
+    def build_analysis_prompt(self, insider_trade: dict, stock_context: dict) -> str:
         """Build the analysis prompt from context."""
-        trade = context.get('insider_trade', {})
-        stock_context = context.get('stock_context', {})
+        trade = insider_trade
+        # stock_context is passed directly
         
         # Extracting specific parts for clarity in the prompt
         fundamentals = stock_context.get('fundamentals', {})
         technicals = stock_context.get('technicals', {})
         signals = stock_context.get('signals', {})
         
-        trade_date_str = trade.get('trade_date')
-        trade_date = datetime.strptime(trade_date_str, '%Y-%m-%d') if trade_date_str else None
+        trade_date_str = str(trade.get('trade_date', ''))
+        try:
+            if 'T' in trade_date_str:
+                trade_date = datetime.fromisoformat(trade_date_str)
+            else:
+                trade_date = datetime.strptime(trade_date_str, '%Y-%m-%d')
+        except (ValueError, TypeError):
+            trade_date = None
         
         date_context = ""
         if trade_date:
@@ -105,13 +113,13 @@ Analyze the following insider trading signal:
 - Title: {trade.get('insider_title')}
 - Trade Date: {trade.get('trade_date')}
 - Price: ${trade.get('price')}
-- Value: ${trade.get('value'):,.0f}
+- Value: ${0 if trade.get('value') is None else trade.get('value'):,.0f}
 - Ownership Change: {trade.get('delta_owned')}%
 
 ## Stock Context
 - Sector: {stock_context.get('sector')}
 - Industry: {stock_context.get('industry')}
-- Market Cap: ${stock_context.get('market_cap'):,.0f if stock_context.get('market_cap') else 'N/A'}
+- Market Cap: ${0 if stock_context.get('market_cap') is None else stock_context.get('market_cap'):,.0f}
 
 ## Fundamentals
 - Dividend Yield: {stock_context.get('fundamentals', {}).get('dividend_yield')}

@@ -116,61 +116,79 @@ class BacktestEngine:
                 progress_callback(f"Starting simulation with ${initial_capital:,.2f} initial capital", "info")
             
             # Aggregate trades by ticker, date, and type to avoid double work
-            aggregated_map = {}
-            for trade in insider_trades:
-                # Key: Ticker + Date (YYYY-MM-DD) + Type
-                key = (trade.ticker, trade.trade_date.date(), trade.trade_type)
+            try:
+                aggregated_map = {}
+                for trade in insider_trades:
+                    # Key: Ticker + Date (YYYY-MM-DD) + Type
+                    try:
+                        t_date = trade.trade_date
+                        if isinstance(t_date, str):
+                            t_date = datetime.fromisoformat(t_date)
+                        # Ensure we have a date object
+                        date_key = t_date.date() if hasattr(t_date, 'date') else t_date
+                        key = (trade.ticker, date_key, trade.trade_type)
+                    except Exception as e:
+                        logger.error(f"Error creating key for trade {trade.id}: {e}")
+                        continue
+                    
+                    if key not in aggregated_map:
+                        # Create base dict from first trade
+                        base_dict = trade.to_dict()
+                        # CRITICAL: trade.to_dict() converts dates to strings, but StockService needs datetime objects
+                        base_dict['trade_date'] = t_date 
+                        
+                        base_dict['insider_names'] = [trade.insider_name]
+                        base_dict['original_count'] = 1
+                        aggregated_map[key] = base_dict
+                    else:
+                        # Merge into existing
+                        agg = aggregated_map[key]
+                        agg['value'] = (agg.get('value') or 0) + (trade.value or 0)
+                        agg['quantity'] = (agg.get('quantity') or 0) + (trade.quantity or 0)
+                        if trade.insider_name not in agg['insider_names']:
+                            agg['insider_names'].append(trade.insider_name)
+                        agg['original_count'] += 1
                 
-                if key not in aggregated_map:
-                    # Create base dict from first trade
-                    base_dict = trade.to_dict()
-                    base_dict['insider_names'] = [trade.insider_name]
-                    base_dict['original_count'] = 1
-                    aggregated_map[key] = base_dict
-                else:
-                    # Merge into existing
-                    agg = aggregated_map[key]
-                    agg['value'] = (agg.get('value') or 0) + (trade.value or 0)
-                    agg['quantity'] = (agg.get('quantity') or 0) + (trade.quantity or 0)
-                    if trade.insider_name not in agg['insider_names']:
-                        agg['insider_names'].append(trade.insider_name)
-                    agg['original_count'] += 1
-            
-            # Convert aggregated map back to list of objects (or dicts acting as objects)
-            # We need to simulate the object access pattern or just use dicts. 
-            # The current loop uses `insider_trade.ticker`. If we change `insider_trades` to be a list of dicts,
-            # we must adjust the accessors in the loop below (e.g. `insider_trade['ticker']`).
-            # BETTER STRATEGY: Create a simple class wrapper or just modify the loop to handle dicts if needed.
-            # But simpler: Use `SimpleNamespace` or just rewrite the loop to use dict access?
-            # The loop uses: .ticker, .trade_date, .to_dict().
-            # Let's wrap the dicts in a helper class to maintain dot notation compatibility.
-            
-            class TradeWrapper:
-                def __init__(self, data):
-                    self.data = data
-                    for k, v in data.items():
-                        setattr(self, k, v)
-                    # Special handling for aggregated fields
-                    if len(data.get('insider_names', [])) > 1:
-                        self.insider_name = f"{len(data['insider_names'])} Insiders ({', '.join(data['insider_names'][:2])}...)"
-                    self.value = data.get('value')
-                    self.quantity = data.get('quantity')
-                    # Ensure price exists (fallback to original entry's price)
-                    self.price = data.get('price')
+                # Helper class to mimic object access (dot notation) used in the analysis loop
+                class TradeWrapper:
+                    def __init__(self, data):
+                        self.data = data
+                        for k, v in data.items():
+                            setattr(self, k, v)
+                        # Formatted insider name for aggregated trades
+                        if len(data.get('insider_names', [])) > 1:
+                            self.insider_name = f"{len(data['insider_names'])} Insiders ({', '.join(data['insider_names'][:2])}...)"
+                        
+                        # Ensure numeric fields are safe
+                        self.value = data.get('value', 0)
+                        self.quantity = data.get('quantity', 0)
+                        self.price = data.get('price')
 
-                def to_dict(self):
-                    return self.data
+                    def to_dict(self):
+                        # Return safe dict for serialization
+                        d = self.data.copy()
+                        # Convert date back to string if it was object
+                        if isinstance(d.get('trade_date'), datetime):
+                            d['trade_date'] = d['trade_date'].isoformat()
+                        return d
 
-            processed_trades = [TradeWrapper(d) for d in aggregated_map.values()]
-            # Sort by date
-            processed_trades.sort(key=lambda x: x.trade_date)
-            
-            if progress_callback:
-                 progress_callback(f"Aggregated {len(insider_trades)} raw trades into {len(processed_trades)} analyzed events.", "info")
+                processed_trades = [TradeWrapper(d) for d in aggregated_map.values()]
+                
+                # Sort safely
+                processed_trades.sort(key=lambda x: x.trade_date if hasattr(x, 'trade_date') else datetime.min)
+                
+                if progress_callback:
+                    progress_callback(f"Aggregated {len(insider_trades)} raw trades into {len(processed_trades)} analyzed events.", "info")
+                    
+            except Exception as e:
+                logger.error(f"Aggregation failed: {e}")
+                if progress_callback:
+                    progress_callback(f"Aggregation failed: {e}. Proceeding with raw trades.", "error")
+                processed_trades = insider_trades # Fallback
 
             for idx, insider_trade in enumerate(processed_trades, 1):
                 if progress_callback and idx % 10 == 0:
-                    progress_callback(f"Analyzing trade {idx}/{len(insider_trades)}: {insider_trade.ticker}", "progress")
+                    progress_callback(f"Analyzing trade {idx}/{len(processed_trades)}: {insider_trade.ticker}", "progress")
                 # Get stock context for analysis
                 stock_context = self.stock_service.get_analysis_context(
                     insider_trade.ticker,
